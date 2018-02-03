@@ -13,10 +13,10 @@
 
 CC = cc
 OPT = -O3
-CFLAGS = -Wall -std=gnu99 $(OPT)
+CFLAGS = -Wall -std=gnu99 $(OPT) -openmp
 LDFLAGS = -Wall
 # librt is needed for clock_gettime
-LDLIBS = -lrt -ftree-vectorize
+LDLIBS = -lrt -ftree-vectorize -openmp
 
 targets = benchmark-naive benchmark-blocked benchmark-blas
 objects = benchmark.o dgemm-naive.o dgemm-blocked.o dgemm-blas.o
