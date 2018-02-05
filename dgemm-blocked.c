@@ -125,7 +125,7 @@ static void compute_four_by_four(double* A, double* B, double* C, int M, int N, 
   __m256d c_col_0, c_col_1, c_col_2, c_col_3;
   __m256d b_k0, b_k1, b_k2, b_k3;
 
-  #pragma omp parallel num_threads(1)
+  #pragma omp parallel num_threads(2)
   {
     #pragma omp for //divide the whole for loop by two threads
     for (int i = (M/STRIDE)*STRIDE; i <= M - 4; i += 4){
@@ -238,7 +238,15 @@ static void compute(double* A, double* B, double* C, int M, int N, int K, int ld
 static void divide_into_small_blocks(double* A, double* B, double* C, int M, int N, int K, int lda){
   
   //tweak size
-  int SMALL_M = 32;
+  // int SMALL_M = 32;
+  // int SMALL_N = 64;
+  // int SMALL_K = 128;
+  int SMALL_M = 8;
+  if (lda < 300 && lda > 64)
+    SMALL_M = 16;
+  else
+    SMALL_M = 32;
+
   int SMALL_N = 64;
   int SMALL_K = 128;
 
