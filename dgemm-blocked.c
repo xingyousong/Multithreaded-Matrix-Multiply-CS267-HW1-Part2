@@ -233,16 +233,20 @@ static void two_by_two_and_naive(double* A, double* B, double* C, int M, int N, 
 
     //Ultimate Leftover, Brute Force
     for (int i = (M/2)*2; i < M; ++i){
-      for (int j = 0; j < N; j++){
-        c_col_0 = _mm_load_sd(C + i + j*lda);
-        __m128d a_row_k_first_half;
-        int A_pos = weird_offset_no_multiply(i,0,lda,STRIDE);
-        for (int k = 0; k < K; k++){
-          a_row_k_first_half  = _mm_load_sd(A + A_pos + k * STRIDE);
-          b_k0                = _mm_set1_pd(B[k+j*lda]);
-          c_col_0             = _mm_fmadd_sd(a_row_k_first_half, b_k0, c_col_0);
+      #pragma omp parallel num_threads(2)
+      {
+        #pragma omp for
+        for (int j = 0; j < N; j++){
+          c_col_0 = _mm_load_sd(C + i + j*lda);
+          __m128d a_row_k_first_half;
+          int A_pos = weird_offset_no_multiply(i,0,lda,STRIDE);
+          for (int k = 0; k < K; k++){
+            a_row_k_first_half  = _mm_load_sd(A + A_pos + k * STRIDE);
+            b_k0                = _mm_set1_pd(B[k+j*lda]);
+            c_col_0             = _mm_fmadd_sd(a_row_k_first_half, b_k0, c_col_0);
+          }
+          _mm_store_sd(C+i+j*lda,      c_col_0);
         }
-        _mm_store_sd(C+i+j*lda,      c_col_0);
       }
     }
 }
