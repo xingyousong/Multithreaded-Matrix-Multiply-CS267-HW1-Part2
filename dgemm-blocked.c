@@ -20,6 +20,7 @@
 const char* dgemm_desc = "Yao & Xingyou's Optimized blocked dgemm.";
 
 
+////////
 static double* weird_transformation(double* src, int lda, int stride) {
   // //we would like to have the array been divided into multiple subarrays
   // //The number of columns should be a multiply of stride
@@ -40,6 +41,34 @@ static double* weird_transformation(double* src, int lda, int stride) {
   return dest;
 }
 
+////////
+static double* super_padding(double* src, int lda, int stride){
+  int padded_lda = ceil((double)lda / stride) * stride;
+  double* dest __attribute__((aligned(32))) = malloc(padded_lda * padded_lda * sizeof(double));
+  int numBytes = lda * sizeof(double);
+  #pragma omp parallel num_threads(16)
+  {
+    #pragma omp for
+    for (int i = 0; i < lda; i++){
+      memcpy(dest + i * padded_lda, src + i * lda, numBytes);
+    }
+  }
+  return dest;
+}
+
+///////////
+static void put_back(double* dest, double* src, int lda, int padded_lda){
+  int numBytes = lda * sizeof(double);
+
+  #pragma omp parallel num_threads(32)
+  {
+    #pragma omp for
+    for (int i = 0; i < lda; i++){
+      memcpy(dest + i * lda, src + i * padded_lda, numBytes);
+    }
+  }
+}
+
 
 //Handle 4 * 8
 static void compute_four_by_eight(double* A, double* B, double* C, int M, int N, int K, int lda){
@@ -52,10 +81,9 @@ static void compute_four_by_eight(double* A, double* B, double* C, int M, int N,
 
   #pragma omp parallel num_threads(2)
   {
-    #pragma omp for //divide the whole for loop by two threads
-
-    for (int i = 0; i <= M - STRIDE; i += STRIDE){
-      for (int j = 0; j <= N - 4; j += 4){
+    #pragma omp for
+    for (int i = 0; i < M; i += STRIDE){
+      for (int j = 0; j < N; j += 4){
           double* Cij = C + i + j*lda;
           //load cols
           c_col_0 = _mm256_load_pd(Cij);
@@ -99,135 +127,15 @@ static void compute_four_by_eight(double* A, double* B, double* C, int M, int N,
           _mm256_store_pd(Cij+2*lda+4, c_col_6);
           _mm256_store_pd(Cij+3*lda+4, c_col_7);
       }
-
-      //leftover//
-      for (int j = (N/4)*4; j < N; j++){
-          c_col_0 = _mm256_load_pd(C + i + j*lda);
-          c_col_1 = _mm256_load_pd(C + i + j*lda + 4);
-          __m256d a_row_k_first_half;
-          __m256d a_row_k_second_half;
-          for (int k = 0; k < K; k++){
-            a_row_k_first_half  = _mm256_load_pd(A+weird_offset(i,k,lda,STRIDE));
-            a_row_k_second_half = _mm256_load_pd(A+weird_offset(i,k,lda,STRIDE)+4);
-            b_k0                = _mm256_broadcast_sd(B+k+j*lda);
-            c_col_0             = _mm256_fmadd_pd(a_row_k_first_half, b_k0, c_col_0);
-            c_col_1             = _mm256_fmadd_pd(a_row_k_second_half, b_k0, c_col_1);
-          }
-          _mm256_store_pd(C+i+j*lda,      c_col_0);
-          _mm256_store_pd(C+i+j*lda + 4,  c_col_1);
-      }
     }
   }
 }
-
-//Handle 4 * 4
-static void compute_four_by_four(double* A, double* B, double* C, int M, int N, int K, int lda){
-  __m256d c_col_0, c_col_1, c_col_2, c_col_3;
-  __m256d b_k0, b_k1, b_k2, b_k3;
-
-  #pragma omp parallel num_threads(2)
-  {
-    #pragma omp for //divide the whole for loop by two threads
-    for (int i = (M/STRIDE)*STRIDE; i <= M - 4; i += 4){
-      for (int j = 0; j <= N - 4; j += 4){
-          double* Cij = C + i + j*lda;
-          //load cols
-          c_col_0 = _mm256_load_pd(Cij);
-          c_col_1 = _mm256_load_pd(Cij + lda);
-          c_col_2 = _mm256_load_pd(Cij + 2*lda);
-          c_col_3 = _mm256_load_pd(Cij + 3*lda);
-
-          __m256d a_row_k_first_half;
-          for (int k = 0; k < K; ++k){
-            a_row_k_first_half = _mm256_load_pd(A+weird_offset_no_multiply(i, k, lda, STRIDE));
-
-            //broadcast might be faster
-            b_k0 = _mm256_set1_pd(B[k+j*lda]);
-            b_k1 = _mm256_set1_pd(B[k+(j+1)*lda]);
-            b_k2 = _mm256_set1_pd(B[k+(j+2)*lda]);
-            b_k3 = _mm256_set1_pd(B[k+(j+3)*lda]);
-
-            c_col_0 = _mm256_fmadd_pd(a_row_k_first_half, b_k0, c_col_0);     
-            c_col_1 = _mm256_fmadd_pd(a_row_k_first_half, b_k1, c_col_1);
-            c_col_2 = _mm256_fmadd_pd(a_row_k_first_half, b_k2, c_col_2);
-            c_col_3 = _mm256_fmadd_pd(a_row_k_first_half, b_k3, c_col_3);
-          }
-          _mm256_store_pd(Cij,         c_col_0);
-          _mm256_store_pd(Cij+lda,     c_col_1);
-          _mm256_store_pd(Cij+2*lda,   c_col_2);
-          _mm256_store_pd(Cij+3*lda,   c_col_3);
-      }
-
-      //leftover//
-      for (int j = (N/4)*4; j < N; j++){
-          c_col_0 = _mm256_load_pd(C + i + j*lda);
-          __m256d a_row_k_first_half;
-          for (int k = 0; k < K; k++){
-            a_row_k_first_half  = _mm256_load_pd(A+weird_offset(i,k,lda,STRIDE));
-            b_k0                = _mm256_broadcast_sd(B+k+j*lda);
-            c_col_0             = _mm256_fmadd_pd(a_row_k_first_half, b_k0, c_col_0);
-          }
-          _mm256_store_pd(C+i+j*lda,      c_col_0);
-      }
-    }
-  }
-}
-
-
-//naive brutal force
-static void naive(double* A, double* B, double* C, int M, int N, int K, int lda){
-  __assume_aligned(A, 32);
-  __assume_aligned(B, 32);
-  __assume_aligned(C, 32);
-
-  //Ultimate Leftover, Brute Force 
-  for (int i = (M/4)*4; i < M; ++i){
-      for (int j = 0; j < N; ++j){
-          double C_ij = C[i+j*lda];
-          for (int k = 0; k < K; k++){
-            C_ij += A[weird_offset_no_multiply(i, k, lda, STRIDE)] * B[k+j*lda];
-          }
-          C[i+j*lda] = C_ij;
-      }
-  }
-}
-
-
-
 // A   M * K
 // B   K * N
 // C   M * N
 static void compute(double* A, double* B, double* C, int M, int N, int K, int lda){
   //The following methods can be called in arbitrary sequence.
-
-  #pragma omp parallel sections num_threads(1)
-  {    
-    
-    #pragma omp section
-    {
-      //first handle edge case using naive
-      //The lightest section
-      //double tdata = omp_get_wtime();
-      naive(A, B, C, M, N, K, lda);
-      
-      //then handle those cannot be computed using 4 by 8
-      //Second Lightest section
-      compute_four_by_four(A, B, C, M, N, K, lda);
-      //tdata = omp_get_wtime() - tdata;
-      //printf("Section 2: %f secs\n", tdata);
-
-    }
-    
-    #pragma omp section
-    {
-      //lastly handle those can be computed using 4 by 8
-      //The heaviest section
-      //double tdata = omp_get_wtime();
-      compute_four_by_eight(A, B, C, M, N, K, lda);
-      //tdata = omp_get_wtime() - tdata;
-      //printf("Section 2: %f secs\n", tdata);
-    }
-  }
+  compute_four_by_eight(A, B, C, M, N, K, lda);
 }
 
 
@@ -311,11 +219,19 @@ static void divide_into_large_blocks(double* A, double* B, double* C, int lda){
 
 void square_dgemm (int lda, double* A, double* B, double* C){
 
-  double tdata = omp_get_wtime();
+  int padded_lda = ceil((double)lda / STRIDE) * STRIDE;
 
-  divide_into_large_blocks(A, B, C, lda);
+  //double* padded_A __attribute__((aligned(32))) = super_padding(A, lda, STRIDE);
+  double* padded_B __attribute__((aligned(32))) = super_padding(B, lda, STRIDE);
+  double* padded_C __attribute__((aligned(32))) = super_padding(C, lda, STRIDE);
 
-  tdata = omp_get_wtime() - tdata;
-  //printf("Total Time: %f secs\n", tdata);
+
+  divide_into_large_blocks(A, padded_B, padded_C, padded_lda);
+
+  put_back(C, padded_C, lda, padded_lda);
+
+  //free(padded_A);
+  free(padded_B);
+  free(padded_C);
 
 }
