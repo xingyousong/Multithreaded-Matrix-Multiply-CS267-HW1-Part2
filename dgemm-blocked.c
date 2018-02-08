@@ -17,7 +17,7 @@
 #define weird_offset(i, j, lda, stride) (i*lda + j*stride)
 #define weird_offset_no_multiply(i, j, lda, stride) ((i/STRIDE) * STRIDE * lda + j * STRIDE + i % STRIDE)
  
-const char* dgemm_desc = "Yao & Xingyou's Optimized blocked dgemm.";
+const char* dgemm_desc = "Yao & Xingyou's Optimized blocked dgemm v0.2.";
 
 
 static double* weird_transformation(double* src, int lda, int stride) {
@@ -28,14 +28,20 @@ static double* weird_transformation(double* src, int lda, int stride) {
 
   double* dest __attribute__((aligned(32))) = malloc(rowNums * colNums * sizeof(double));
 
-  #pragma omp parallel num_threads(16)
+  #pragma omp parallel num_threads(min(32, (lda/stride)))
   {
     #pragma omp for //divide the whole for loop by two threads
-    for (int i = 0; i < lda * lda; i++){
-      int whichRow = (i % lda) / stride;
-      int whichCol = i / lda * stride + i % lda - whichRow * stride;
-      dest[whichRow * colNums + whichCol] = src[i];
+    for (int i = 0; i < lda; i++){
+      for (int j = 0; j < lda; j++){
+        dest[weird_offset_no_multiply(i, j, lda, stride)] = src[col_major_offset(i, j, lda)];
+      }
     }
+
+    // for (int i = 0; i < lda * lda; i++){
+    //   int whichRow = (i % lda) / stride;
+    //   int whichCol = i / lda * stride + i % lda - whichRow * stride;
+    //   dest[whichRow * colNums + whichCol] = src[i];
+    // }
   }
   return dest;
 }
@@ -50,22 +56,22 @@ static void compute_four_by_eight(double* A, double* B, double* C, int M, int N,
   __m256d c_col_0, c_col_1, c_col_2, c_col_3, c_col_4, c_col_5, c_col_6, c_col_7;
   __m256d b_k0, b_k1, b_k2, b_k3;
 
-  #pragma omp parallel num_threads(2)
+  #pragma omp parallel num_threads(1)
   {
     #pragma omp for //divide the whole for loop by two threads
 
     for (int i = 0; i <= M - STRIDE; i += STRIDE){
       for (int j = 0; j <= N - 4; j += 4){
-          double* Cij = C + i + j*lda;
+          double* C_ij = C + i + j*lda;
           //load cols
-          c_col_0 = _mm256_load_pd(Cij);
-          c_col_1 = _mm256_load_pd(Cij + lda);
-          c_col_2 = _mm256_load_pd(Cij + 2*lda);
-          c_col_3 = _mm256_load_pd(Cij + 3*lda);
-          c_col_4 = _mm256_load_pd(Cij + 4);
-          c_col_5 = _mm256_load_pd(Cij + lda + 4);
-          c_col_6 = _mm256_load_pd(Cij + 2*lda + 4);
-          c_col_7 = _mm256_load_pd(Cij + 3*lda + 4);
+          c_col_0 = _mm256_load_pd(C_ij);
+          c_col_1 = _mm256_load_pd(C_ij + lda);
+          c_col_2 = _mm256_load_pd(C_ij + 2*lda);
+          c_col_3 = _mm256_load_pd(C_ij + 3*lda);
+          c_col_4 = _mm256_load_pd(C_ij + 4);
+          c_col_5 = _mm256_load_pd(C_ij + lda + 4);
+          c_col_6 = _mm256_load_pd(C_ij + 2*lda + 4);
+          c_col_7 = _mm256_load_pd(C_ij + 3*lda + 4);
        
           __m256d a_row_k_first_half;
           __m256d a_row_k_second_half;
@@ -90,14 +96,14 @@ static void compute_four_by_eight(double* A, double* B, double* C, int M, int N,
 
 
           }
-          _mm256_store_pd(Cij,         c_col_0);
-          _mm256_store_pd(Cij+lda,     c_col_1);
-          _mm256_store_pd(Cij+2*lda,   c_col_2);
-          _mm256_store_pd(Cij+3*lda,   c_col_3);
-          _mm256_store_pd(Cij+4,       c_col_4);
-          _mm256_store_pd(Cij+lda+4,   c_col_5);
-          _mm256_store_pd(Cij+2*lda+4, c_col_6);
-          _mm256_store_pd(Cij+3*lda+4, c_col_7);
+          _mm256_store_pd(C_ij,         c_col_0);
+          _mm256_store_pd(C_ij+lda,     c_col_1);
+          _mm256_store_pd(C_ij+2*lda,   c_col_2);
+          _mm256_store_pd(C_ij+3*lda,   c_col_3);
+          _mm256_store_pd(C_ij+4,       c_col_4);
+          _mm256_store_pd(C_ij+lda+4,   c_col_5);
+          _mm256_store_pd(C_ij+2*lda+4, c_col_6);
+          _mm256_store_pd(C_ij+3*lda+4, c_col_7);
       }
 
       //leftover//
@@ -125,74 +131,155 @@ static void compute_four_by_four(double* A, double* B, double* C, int M, int N, 
   __m256d c_col_0, c_col_1, c_col_2, c_col_3;
   __m256d b_k0, b_k1, b_k2, b_k3;
 
-  #pragma omp parallel num_threads(2)
+  #pragma omp parallel num_threads(1)
   {
     #pragma omp for //divide the whole for loop by two threads
     for (int i = (M/STRIDE)*STRIDE; i <= M - 4; i += 4){
-      for (int j = 0; j <= N - 4; j += 4){
-          double* Cij = C + i + j*lda;
-          //load cols
-          c_col_0 = _mm256_load_pd(Cij);
-          c_col_1 = _mm256_load_pd(Cij + lda);
-          c_col_2 = _mm256_load_pd(Cij + 2*lda);
-          c_col_3 = _mm256_load_pd(Cij + 3*lda);
+      #pragma omp parallel num_threads(1)
+      {
+        #pragma omp for
+        for (int j = 0; j <= N - 4; j += 4){
+            double* C_ij = C + i + j*lda;
+            //load cols
+            c_col_0 = _mm256_load_pd(C_ij);
+            c_col_1 = _mm256_load_pd(C_ij + lda);
+            c_col_2 = _mm256_load_pd(C_ij + 2*lda);
+            c_col_3 = _mm256_load_pd(C_ij + 3*lda);
 
-          __m256d a_row_k_first_half;
-          for (int k = 0; k < K; ++k){
-            a_row_k_first_half = _mm256_load_pd(A+weird_offset_no_multiply(i, k, lda, STRIDE));
+            __m256d a_row_k_first_half;
+            for (int k = 0; k < K; ++k){
+              a_row_k_first_half = _mm256_load_pd(A+weird_offset_no_multiply(i, k, lda, STRIDE));
 
-            //broadcast might be faster
-            b_k0 = _mm256_set1_pd(B[k+j*lda]);
-            b_k1 = _mm256_set1_pd(B[k+(j+1)*lda]);
-            b_k2 = _mm256_set1_pd(B[k+(j+2)*lda]);
-            b_k3 = _mm256_set1_pd(B[k+(j+3)*lda]);
+              //broadcast might be faster
+              b_k0 = _mm256_set1_pd(B[k+j*lda]);
+              b_k1 = _mm256_set1_pd(B[k+(j+1)*lda]);
+              b_k2 = _mm256_set1_pd(B[k+(j+2)*lda]);
+              b_k3 = _mm256_set1_pd(B[k+(j+3)*lda]);
 
-            c_col_0 = _mm256_fmadd_pd(a_row_k_first_half, b_k0, c_col_0);     
-            c_col_1 = _mm256_fmadd_pd(a_row_k_first_half, b_k1, c_col_1);
-            c_col_2 = _mm256_fmadd_pd(a_row_k_first_half, b_k2, c_col_2);
-            c_col_3 = _mm256_fmadd_pd(a_row_k_first_half, b_k3, c_col_3);
-          }
-          _mm256_store_pd(Cij,         c_col_0);
-          _mm256_store_pd(Cij+lda,     c_col_1);
-          _mm256_store_pd(Cij+2*lda,   c_col_2);
-          _mm256_store_pd(Cij+3*lda,   c_col_3);
-      }
+              c_col_0 = _mm256_fmadd_pd(a_row_k_first_half, b_k0, c_col_0);     
+              c_col_1 = _mm256_fmadd_pd(a_row_k_first_half, b_k1, c_col_1);
+              c_col_2 = _mm256_fmadd_pd(a_row_k_first_half, b_k2, c_col_2);
+              c_col_3 = _mm256_fmadd_pd(a_row_k_first_half, b_k3, c_col_3);
+            }
+            _mm256_store_pd(C_ij,         c_col_0);
+            _mm256_store_pd(C_ij+lda,     c_col_1);
+            _mm256_store_pd(C_ij+2*lda,   c_col_2);
+            _mm256_store_pd(C_ij+3*lda,   c_col_3);
+        }
 
-      //leftover//
-      for (int j = (N/4)*4; j < N; j++){
-          c_col_0 = _mm256_load_pd(C + i + j*lda);
-          __m256d a_row_k_first_half;
-          for (int k = 0; k < K; k++){
-            a_row_k_first_half  = _mm256_load_pd(A+weird_offset(i,k,lda,STRIDE));
-            b_k0                = _mm256_broadcast_sd(B+k+j*lda);
-            c_col_0             = _mm256_fmadd_pd(a_row_k_first_half, b_k0, c_col_0);
-          }
-          _mm256_store_pd(C+i+j*lda,      c_col_0);
+        //leftover//
+        for (int j = (N/4)*4; j < N; j++){
+            c_col_0 = _mm256_load_pd(C + i + j*lda);
+            __m256d a_row_k_first_half;
+            for (int k = 0; k < K; k++){
+              a_row_k_first_half  = _mm256_load_pd(A+weird_offset(i,k,lda,STRIDE));
+              b_k0                = _mm256_broadcast_sd(B+k+j*lda);
+              c_col_0             = _mm256_fmadd_pd(a_row_k_first_half, b_k0, c_col_0);
+            }
+            _mm256_store_pd(C+i+j*lda,      c_col_0);
+        }
       }
     }
   }
 }
 
-
 //naive brutal force
+static void two_by_two_and_naive(double* A, double* B, double* C, int M, int N, int K, int lda){
+  __assume_aligned(A, 32);
+  __assume_aligned(B, 32);
+  __assume_aligned(C, 32);
+
+  __m128d c_col_0, c_col_1, c_col_2, c_col_3;
+  __m128d b_k0, b_k1, b_k2, b_k3;
+  for (int i = (M/4)*4; i <= M-2; i+=2){
+    #pragma omp parallel num_threads(1)
+    {
+      #pragma omp for
+      for (int j = 0; j <= N-4; j += 4){
+        double* C_ij = C + i + j*lda;
+        //load cols
+        c_col_0 = _mm_load_pd(C_ij);
+        c_col_1 = _mm_load_pd(C_ij + lda);
+        c_col_2 = _mm_load_pd(C_ij + 2 * lda);
+        c_col_3 = _mm_load_pd(C_ij + 3 * lda);
+
+        __m128d a_row_k_first_half;
+        int A_pos = weird_offset_no_multiply(i, 0, lda, STRIDE);
+        for (int k = 0; k < K; ++k){
+          a_row_k_first_half = _mm_load_pd(A + A_pos + k * STRIDE);
+
+          //broadcast might be faster
+          b_k0 = _mm_set1_pd(B[k+j*lda]);
+          b_k1 = _mm_set1_pd(B[k+(j+1)*lda]);
+          b_k2 = _mm_set1_pd(B[k+(j+2)*lda]);
+          b_k3 = _mm_set1_pd(B[k+(j+3)*lda]);
+
+          c_col_0 = _mm_fmadd_pd(a_row_k_first_half, b_k0, c_col_0);
+          c_col_1 = _mm_fmadd_pd(a_row_k_first_half, b_k1, c_col_1);
+          c_col_2 = _mm_fmadd_pd(a_row_k_first_half, b_k2, c_col_2);
+          c_col_3 = _mm_fmadd_pd(a_row_k_first_half, b_k3, c_col_3);
+
+          _mm_store_pd(C_ij,         c_col_0);
+          _mm_store_pd(C_ij+lda,     c_col_1);
+          _mm_store_pd(C_ij+2*lda,   c_col_2);
+          _mm_store_pd(C_ij+3*lda,   c_col_3);
+        }
+      }
+      //leftover//
+      for (int j = (N/4)*4; j < N; j++){
+          c_col_0 = _mm_load_pd(C + i + j*lda);
+          __m128d a_row_k_first_half;
+          int A_pos = weird_offset_no_multiply(i,0,lda,STRIDE);
+          for (int k = 0; k < K; k++){
+            a_row_k_first_half  = _mm_load_pd(A + A_pos + k * STRIDE);
+            b_k0                = _mm_set1_pd(B[k+j*lda]);
+            c_col_0             = _mm_fmadd_pd(a_row_k_first_half, b_k0, c_col_0);
+          }
+          _mm_store_pd(C+i+j*lda,      c_col_0);
+      }
+    }
+  }
+
+  //Ultimate Leftover, Brute Force
+  for (int i = (M/2)*2; i < M; ++i){
+    #pragma omp parallel num_threads(1)
+    {
+      #pragma omp for
+      for (int j = 0; j < N; j++){
+        c_col_0 = _mm_load_sd(C + i + j*lda);
+        __m128d a_row_k_first_half;
+        int A_pos = weird_offset_no_multiply(i,0,lda,STRIDE);
+        for (int k = 0; k < K; k++){
+          a_row_k_first_half  = _mm_load_sd(A + A_pos + k * STRIDE);
+          b_k0                = _mm_set1_pd(B[k+j*lda]);
+          c_col_0             = _mm_fmadd_sd(a_row_k_first_half, b_k0, c_col_0);
+        }
+        _mm_store_sd(C+i+j*lda,      c_col_0);
+      }
+    }
+  }
+}
+
 static void naive(double* A, double* B, double* C, int M, int N, int K, int lda){
   __assume_aligned(A, 32);
   __assume_aligned(B, 32);
   __assume_aligned(C, 32);
 
   //Ultimate Leftover, Brute Force 
-  for (int i = (M/4)*4; i < M; ++i){
+  for (int i = (M/STRIDE)*STRIDE; i < M; ++i){
       for (int j = 0; j < N; ++j){
           double C_ij = C[i+j*lda];
-          for (int k = 0; k < K; k++){
-            C_ij += A[weird_offset_no_multiply(i, k, lda, STRIDE)] * B[k+j*lda];
+          #pragma omp parallel num_threads(4)
+          {
+            #pragma omp for reduction (+ : C_ij) 
+            for (int k = 0; k < K; k++){
+              C_ij += A[weird_offset_no_multiply(i, k, lda, STRIDE)] * B[k+j*lda];
+            }
           }
           C[i+j*lda] = C_ij;
       }
   }
 }
-
-
 
 // A   M * K
 // B   K * N
@@ -200,34 +287,11 @@ static void naive(double* A, double* B, double* C, int M, int N, int K, int lda)
 static void compute(double* A, double* B, double* C, int M, int N, int K, int lda){
   //The following methods can be called in arbitrary sequence.
 
-  #pragma omp parallel sections num_threads(1)
-  {    
-    
-    #pragma omp section
-    {
-      //first handle edge case using naive
-      //The lightest section
-      //double tdata = omp_get_wtime();
-      naive(A, B, C, M, N, K, lda);
-      
-      //then handle those cannot be computed using 4 by 8
-      //Second Lightest section
-      compute_four_by_four(A, B, C, M, N, K, lda);
-      //tdata = omp_get_wtime() - tdata;
-      //printf("Section 2: %f secs\n", tdata);
+  //two_by_two_and_naive(A, B, C, M, N, K, lda);
+  //compute_four_by_four(A, B, C, M, N, K, lda);
+  compute_four_by_eight(A, B, C, M, N, K, lda);
+  naive(A, B, C, M, N, K, lda);
 
-    }
-    
-    #pragma omp section
-    {
-      //lastly handle those can be computed using 4 by 8
-      //The heaviest section
-      //double tdata = omp_get_wtime();
-      compute_four_by_eight(A, B, C, M, N, K, lda);
-      //tdata = omp_get_wtime() - tdata;
-      //printf("Section 2: %f secs\n", tdata);
-    }
-  }
 }
 
 
@@ -241,14 +305,10 @@ static void divide_into_small_blocks(double* A, double* B, double* C, int M, int
   // int SMALL_M = 32;
   // int SMALL_N = 64;
   // int SMALL_K = 128;
-  int SMALL_M = 8;
-  if (lda < 300 && lda > 64)
-    SMALL_M = 16;
-  else
-    SMALL_M = 32;
 
-  int SMALL_N = 64;
-  int SMALL_K = 128;
+  int SMALL_M = 8;
+  int SMALL_N = 8;
+  int SMALL_K = 512;
 
   //tweak loop
   #pragma omp parallel num_threads(1)
@@ -256,7 +316,7 @@ static void divide_into_small_blocks(double* A, double* B, double* C, int M, int
     for (int k = 0; k < K; k += SMALL_K){
       int sub_K = min (SMALL_K, K-k);
       
-      #pragma omp parallel num_threads(max(2, min(16, (M / SMALL_M + 1))))
+      #pragma omp parallel num_threads(1)
       {
         #pragma omp for
         for (int i = 0; i < M; i += SMALL_M){
@@ -288,21 +348,33 @@ static void divide_into_large_blocks(double* A, double* B, double* C, int lda){
   
 
   //tweak size
-  int LARGE_M = 2048;
-  int LARGE_N = 256;
-  int LARGE_K = 512;
+  int LARGE_M = 16;
+  int LARGE_N = 16;
+  int LARGE_K = 1024;
 
   //tweak loop
-  for (int i = 0; i < lda; i += LARGE_M){
-    int M = min (LARGE_M, lda-i);
+  #pragma omp parallel num_threads(min(32, lda / LARGE_M))
+  {
+    #pragma omp for
+    for (int i = 0; i < lda; i += LARGE_M){
+      int M = min (LARGE_M, lda-i);
 
-    for (int j = 0; j < lda; j += LARGE_N){
-      int N = min (LARGE_N, lda-j);
+     #pragma omp parallel num_threads(1)
+      {
+        #pragma omp for
+        for (int j = 0; j < lda; j += LARGE_N){
+          int N = min (LARGE_N, lda-j);
 
-      for (int k = 0; k < lda; k += LARGE_K){
-        int K = min (LARGE_K, lda-k);
-        
-        divide_into_small_blocks(weird_A + weird_offset(i, k, lda, STRIDE), B+col_major_offset(k, j, lda), C+col_major_offset(i, j, lda), M, N, K, lda);
+          #pragma omp parallel num_threads(1)
+          {
+            #pragma omp for
+            for (int k = 0; k < lda; k += LARGE_K){
+              int K = min (LARGE_K, lda-k);
+              
+              divide_into_small_blocks(weird_A + weird_offset(i, k, lda, STRIDE), B+col_major_offset(k, j, lda), C+col_major_offset(i, j, lda), M, N, K, lda);
+            }
+          }
+        }
       }
     }
   }
