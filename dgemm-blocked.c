@@ -32,16 +32,11 @@ static double* weird_transformation(double* src, int lda, int stride) {
   {
     #pragma omp for //divide the whole for loop by two threads
     for (int i = 0; i < lda; i++){
+      int i_pos = weird_offset_no_multiply(i, 0, lda, stride);
       for (int j = 0; j < lda; j++){
-        dest[weird_offset_no_multiply(i, j, lda, stride)] = src[col_major_offset(i, j, lda)];
+        dest[i_pos + j * STRIDE] = src[col_major_offset(i, j, lda)];
       }
     }
-
-    // for (int i = 0; i < lda * lda; i++){
-    //   int whichRow = (i % lda) / stride;
-    //   int whichCol = i / lda * stride + i % lda - whichRow * stride;
-    //   dest[whichRow * colNums + whichCol] = src[i];
-    // }
   }
   return dest;
 }
@@ -269,7 +264,7 @@ static void naive(double* A, double* B, double* C, int M, int N, int K, int lda)
   for (int i = (M/STRIDE)*STRIDE; i < M; ++i){
       for (int j = 0; j < N; ++j){
           double C_ij = C[i+j*lda];
-          #pragma omp parallel num_threads(4)
+          #pragma omp parallel num_threads(2)
           {
             #pragma omp for reduction (+ : C_ij) 
             for (int k = 0; k < K; k++){
@@ -286,11 +281,9 @@ static void naive(double* A, double* B, double* C, int M, int N, int K, int lda)
 // C   M * N
 static void compute(double* A, double* B, double* C, int M, int N, int K, int lda){
   //The following methods can be called in arbitrary sequence.
-
-  //two_by_two_and_naive(A, B, C, M, N, K, lda);
-  //compute_four_by_four(A, B, C, M, N, K, lda);
+  two_by_two_and_naive(A, B, C, M, N, K, lda);
+  compute_four_by_four(A, B, C, M, N, K, lda);
   compute_four_by_eight(A, B, C, M, N, K, lda);
-  naive(A, B, C, M, N, K, lda);
 
 }
 
@@ -302,10 +295,6 @@ static void compute(double* A, double* B, double* C, int M, int N, int K, int ld
 static void divide_into_small_blocks(double* A, double* B, double* C, int M, int N, int K, int lda){
   
   //tweak size
-  // int SMALL_M = 32;
-  // int SMALL_N = 64;
-  // int SMALL_K = 128;
-
   int SMALL_M = 8;
   int SMALL_N = 8;
   int SMALL_K = 512;
