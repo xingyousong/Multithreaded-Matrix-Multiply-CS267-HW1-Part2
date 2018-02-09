@@ -255,27 +255,6 @@ static void two_by_two_and_naive(double* A, double* B, double* C, int M, int N, 
   }
 }
 
-static void naive(double* A, double* B, double* C, int M, int N, int K, int lda){
-  __assume_aligned(A, 32);
-  __assume_aligned(B, 32);
-  __assume_aligned(C, 32);
-
-  //Ultimate Leftover, Brute Force 
-  for (int i = (M/STRIDE)*STRIDE; i < M; ++i){
-      for (int j = 0; j < N; ++j){
-          double C_ij = C[i+j*lda];
-          #pragma omp parallel num_threads(2)
-          {
-            #pragma omp for reduction (+ : C_ij) 
-            for (int k = 0; k < K; k++){
-              C_ij += A[weird_offset_no_multiply(i, k, lda, STRIDE)] * B[k+j*lda];
-            }
-          }
-          C[i+j*lda] = C_ij;
-      }
-  }
-}
-
 // A   M * K
 // B   K * N
 // C   M * N
